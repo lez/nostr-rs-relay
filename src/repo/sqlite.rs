@@ -200,6 +200,20 @@ impl SqliteRepo {
                 );
             }
         }
+
+        // CREATE TABLE trust (event_id INTEGER NOT NULL, truster BLOB NOT NULL, trusted BLOB NOT NULL, context TEXT NOT NULL, transitive INTEGER DEFAULT 0 NOT NULL);
+        if e.kind == 30077 { // NIP-77
+            let trusted = hex::decode(e.tag_values_by_name("p").first().unwrap()).ok();
+            let c = e.tag_values_by_name("c");
+            let context = c.first().unwrap();
+            //
+            // WE_ARE_HERE: add insert or update statement by unique d-key
+            let trust_count = tx.execute(
+                "INSERT INTO trust (event_id, truster, trusted, context, transitive) VALUES (?, ?, ?, ?, ?);",
+                params![&ev_id, hex::decode(&e.pubkey).ok(), &trusted, &context, 1]);
+            info!("Inserted trust item for event {:?}.", trust_count);
+        }
+
         // if this event is a deletion, hide the referenced events from the same author.
         if e.kind == 5 {
             let event_candidates = e.tag_values_by_name("e");
@@ -1002,6 +1016,26 @@ fn query_from_filter(f: &ReqFilter) -> (String, Vec<Box<dyn ToSql>>, Option<Stri
         } else {
             filter_components.push("false".to_owned());
         }
+    }
+    // Query for "kings"
+    if let Some(king) = &f.king {
+        params.push(Box::new(king.to_owned()));
+        let mut q_context = "";
+        if let Some(context) = &f.context {
+            q_context = "AND trust.context = ?";
+            params.push(Box::new(context.to_owned()));
+        }
+        filter_components.push(format!(
+            "author IN (
+                WITH RECURSIVE is_trusted(x) AS (
+                    VALUES (?) UNION ALL
+                    SELECT trusted FROM trust, is_trusted
+                        WHERE 
+                            trust.truster = is_trusted.x
+                            {}
+                )
+                SELECT x FROM is_trusted
+            )", q_context).to_owned());
     }
     // Query for Kind
     if let Some(ks) = &f.kinds {

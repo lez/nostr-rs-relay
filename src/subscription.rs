@@ -7,6 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use log::error;
 
 /// Subscription identifier and set of request filters
 #[derive(Serialize, PartialEq, Eq, Debug, Clone)]
@@ -32,6 +33,10 @@ pub struct ReqFilter {
     pub until: Option<u64>,
     /// List of author public keys
     pub authors: Option<Vec<String>>,
+    /// Pubkey of king
+    pub king: Option<Vec<u8>>,
+    /// Trust context
+    pub context: Option<String>,
     /// Limit number of results
     pub limit: Option<u64>,
     /// Set of tags
@@ -67,6 +72,9 @@ impl Serialize for ReqFilter {
         if let Some(authors) = &self.authors {
             map.serialize_entry("authors", &authors)?;
         }
+        if let Some(king) = &self.king {
+            todo!();
+        }
         // serialize tags
         if let Some(tags) = &self.tags {
             for (k, v) in tags {
@@ -75,6 +83,36 @@ impl Serialize for ReqFilter {
             }
         }
         map.end()
+    }
+}
+
+fn process_kings(rf: &mut ReqFilter, raw_kings: Option<Vec<String>>) {
+    if raw_kings == None {
+        return
+    }
+    let a = raw_kings.unwrap();
+    if a.len() == 0 {
+        return
+    }
+    let kc = a.get(0).unwrap();
+    if kc.len() >= 66 {
+        if kc.chars().nth(64).unwrap() != ':' {
+            error!("Invalid king separator char.");
+            return
+        }
+        if let Ok(king_blob) = hex::decode(kc.get(0..64).unwrap()) {
+            rf.king = Some(king_blob);
+            rf.context = Some(kc.get(65..).unwrap().into());
+        } else {
+            error!("Invalid encoding of king pubkey");
+        }
+    }
+    else if kc.len() == 64 {
+        if let Ok(king_blob) = hex::decode(kc) {
+            rf.king = Some(king_blob);
+        } else {
+            error!("Invalid encoding of king pubkey");
+        }
     }
 }
 
@@ -96,6 +134,8 @@ impl<'de> Deserialize<'de> for ReqFilter {
             since: None,
             until: None,
             authors: None,
+            king: None,
+            context: None,
             limit: None,
             tags: None,
             force_no_match: false,
@@ -135,6 +175,9 @@ impl<'de> Deserialize<'de> for ReqFilter {
                     }
                 }
                 rf.authors = raw_authors;
+            } else if key == "kings" {
+                let raw_kings: Option<Vec<String>> = Deserialize::deserialize(val).ok();
+                process_kings(&mut rf, raw_kings);
             } else if key.starts_with('#') && key.len() > 1 && val.is_array() {
                 if let Some(tag_search) = tag_search_char_from_filter(key) {
                     if ts.is_none() {
