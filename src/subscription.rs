@@ -1,4 +1,5 @@
 //! Subscription and filter parsing
+use std::collections::hash_set::Iter;
 use crate::error::Result;
 use crate::event::Event;
 use serde::de::Unexpected;
@@ -16,6 +17,24 @@ pub struct Subscription {
     pub filters: Vec<ReqFilter>,
 }
 
+/// Tag query is AND or OR operation
+#[derive(Serialize, PartialEq, Eq, Debug, Clone)]
+pub enum TagOperand {
+    And(HashSet<String>),
+    Or(HashSet<String>),
+}
+
+impl<'a> IntoIterator for &'a TagOperand {
+    type Item = &'a String;
+    type IntoIter = Iter<'a, String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            TagOperand::Or(vv) => vv.iter(),
+            TagOperand::And(vv) => vv.iter()
+        }
+    }
+}
 /// Filter for requests
 ///
 /// Corresponds to client-provided subscription request elements.  Any
@@ -40,7 +59,7 @@ pub struct ReqFilter {
     /// Limit number of results
     pub limit: Option<u64>,
     /// Set of tags
-    pub tags: Option<HashMap<char, HashSet<String>>>,
+    pub tags: Option<HashMap<char, TagOperand>>,
     /// Force no matches due to malformed data
     // we can't represent it in the req filter, so we don't want to
     // erroneously match.  This basically indicates the req tried to
@@ -78,7 +97,8 @@ impl Serialize for ReqFilter {
         // serialize tags
         if let Some(tags) = &self.tags {
             for (k, v) in tags {
-                let vals: Vec<&String> = v.iter().collect();
+                let vals: Vec<&String> = v.into_iter().collect();
+                //FIXME: add option for &
                 map.serialize_entry(&format!("#{k}"), &vals)?;
             }
         }
@@ -178,7 +198,7 @@ impl<'de> Deserialize<'de> for ReqFilter {
             } else if key == "kings" {
                 let raw_kings: Option<Vec<String>> = Deserialize::deserialize(val).ok();
                 process_kings(&mut rf, raw_kings);
-            } else if key.starts_with('#') && key.len() > 1 && val.is_array() {
+            } else if (key.starts_with('#') || key.starts_with('&')) && key.len() > 1 && val.is_array() {
                 if let Some(tag_search) = tag_search_char_from_filter(key) {
                     if ts.is_none() {
                         // Initialize the tag if necessary
@@ -186,9 +206,17 @@ impl<'de> Deserialize<'de> for ReqFilter {
                     }
                     if let Some(m) = ts.as_mut() {
                         let tag_vals: Option<Vec<String>> = Deserialize::deserialize(val).ok();
+
                         if let Some(v) = tag_vals {
                             let hs = v.into_iter().collect::<HashSet<_>>();
-                            m.insert(tag_search.to_owned(), hs);
+                            let hs_op = match key.chars().nth(0).unwrap() {
+                                '#' => Some(TagOperand::Or(hs)),
+                                '&' => Some(TagOperand::And(hs)),
+                                _ => None
+                            };
+                            if let Some(hs_op_inner) = hs_op {
+                                m.insert(tag_search.to_owned(), hs_op_inner);
+                            }
                         }
                     };
                 } else {
@@ -363,7 +391,7 @@ impl ReqFilter {
         // get the hashset from the filter.
         if let Some(map) = &self.tags {
             for (key, val) in map.iter() {
-                let tag_match = event.generic_tag_val_intersect(*key, val);
+                let tag_match = event.generic_tag_val_intersect(*key, &val);
                 // if there is no match for this tag, the match fails.
                 if !tag_match {
                     return false;

@@ -8,7 +8,7 @@ use crate::nip05::{Nip05Name, VerificationRecord};
 use crate::payment::{InvoiceInfo, InvoiceStatus};
 use crate::repo::sqlite_migration::{upgrade_db, STARTUP_SQL};
 use crate::server::NostrMetrics;
-use crate::subscription::{ReqFilter, Subscription};
+use crate::subscription::{ReqFilter, Subscription, TagOperand};
 use crate::utils::{is_hex, unix_time};
 use async_trait::async_trait;
 use hex;
@@ -1093,8 +1093,13 @@ fn query_from_filter(f: &ReqFilter) -> (String, Vec<Box<dyn ToSql>>, Option<Stri
                 String::new()
             };
 
+            let mut and_clause = String::new();
+            if let TagOperand::And(filter_tags) = val {
+                and_clause = format!("GROUP BY t.event_id HAVING COUNT(DISTINCT t.value) = {}", filter_tags.len());
+            }
+
             let tag_clause = format!(
-		"e.id IN (SELECT t.event_id FROM tag t WHERE (name=? {str_clause} {kind_clause} {since_clause} {until_clause}))"
+                "e.id IN (SELECT t.event_id FROM tag t WHERE (name=? {str_clause} {kind_clause} {since_clause} {until_clause}) {and_clause})"
             );
 
             // add the tag name as the first parameter

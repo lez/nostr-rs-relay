@@ -1,10 +1,10 @@
 use crate::db::QueryResult;
 use crate::error::Result;
-use crate::event::{single_char_tagname, Event};
+use crate::event::{/*single_char_tagname, */Event};
 use crate::nip05::{Nip05Name, VerificationRecord};
 use crate::payment::{InvoiceInfo, InvoiceStatus};
 use crate::repo::{now_jitter, NostrRepo};
-use crate::subscription::{ReqFilter, Subscription};
+use crate::subscription::{ReqFilter, Subscription/*, TagOperand*/};
 use async_std::stream::StreamExt;
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
@@ -170,40 +170,40 @@ ON CONFLICT (id) DO NOTHING"#,
         }
 
         // add all tags to the tag table
-        for tag in e.tags.iter() {
-            // ensure we have 2 values.
-            if tag.len() >= 2 {
-                let tag_name = &tag[0];
-                let tag_val = &tag[1];
-                // only single-char tags are searchable
-                let tag_char_opt = single_char_tagname(tag_name);
-                match &tag_char_opt {
-                    Some(_) => {
-                        // if tag value is lowercase hex;
-                        if is_lower_hex(tag_val) && (tag_val.len() % 2 == 0) {
-                            sqlx::query("INSERT INTO tag (event_id, \"name\", value, value_hex) VALUES($1, $2, NULL, $3) \
-                    ON CONFLICT (event_id, \"name\", value, value_hex) DO NOTHING")
-                                .bind(&id_blob)
-                                .bind(tag_name)
-                                .bind(hex::decode(tag_val).ok())
-                                .execute(&mut tx)
-                                .await
-                                .unwrap();
-                        } else {
-                            sqlx::query("INSERT INTO tag (event_id, \"name\", value, value_hex) VALUES($1, $2, $3, NULL) \
-                    ON CONFLICT (event_id, \"name\", value, value_hex) DO NOTHING")
-                                .bind(&id_blob)
-                                .bind(tag_name)
-                                .bind(tag_val.as_bytes())
-                                .execute(&mut tx)
-                                .await
-                                .unwrap();
-                        }
-                    }
-                    None => {}
-                }
-            }
-        }
+        // for tag in e.tags.iter() {
+        //     // ensure we have 2 values.
+        //     if tag.len() >= 2 {
+        //         let tag_name = &tag[0];
+        //         let tag_val = &tag[1];
+        //         // only single-char tags are searchable
+        //         let tag_char_opt = single_char_tagname(tag_name);
+        //         match &tag_char_opt {
+        //             Some(_) => {
+        //                 // if tag value is lowercase hex;
+        //                 if is_lower_hex(tag_val) && (tag_val.len() % 2 == 0) {
+        //                     sqlx::query("INSERT INTO tag (event_id, \"name\", value, value_hex) VALUES($1, $2, NULL, $3) \
+        //             ON CONFLICT (event_id, \"name\", value, value_hex) DO NOTHING")
+        //                         .bind(&id_blob)
+        //                         .bind(tag_name)
+        //                         .bind(hex::decode(tag_val).ok())
+        //                         .execute(&mut tx)
+        //                         .await
+        //                         .unwrap();
+        //                 } else {
+        //                     sqlx::query("INSERT INTO tag (event_id, \"name\", value, value_hex) VALUES($1, $2, $3, NULL) \
+        //             ON CONFLICT (event_id, \"name\", value, value_hex) DO NOTHING")
+        //                         .bind(&id_blob)
+        //                         .bind(tag_name)
+        //                         .bind(tag_val.as_bytes())
+        //                         .execute(&mut tx)
+        //                         .await
+        //                         .unwrap();
+        //                 }
+        //             }
+        //             None => {}
+        //         }
+        //     }
+        // }
         if e.is_replaceable() {
             let update_count = sqlx::query("DELETE FROM \"event\" WHERE kind=$1 and pub_key = $2 and id not in (select id from \"event\" where kind=$1 and pub_key=$2 order by created_at desc limit 1);")
                 .bind(e.kind as i64)
@@ -791,55 +791,55 @@ fn query_from_filter(f: &ReqFilter) -> Option<QueryBuilder<Postgres>> {
     }
 
     // Query for tags
-    if let Some(map) = &f.tags {
-        if !map.is_empty() {
-            if push_and {
-                query.push(" AND ");
-            }
-            push_and = true;
+    // if let Some(map) = &f.tags {
+    //     if !map.is_empty() {
+    //         if push_and {
+    //             query.push(" AND ");
+    //         }
+    //         push_and = true;
 
-            let mut push_or = false;
-            query.push("e.id IN (SELECT ee.id FROM \"event\" ee LEFT JOIN tag t on ee.id = t.event_id WHERE ee.hidden != 1::bit(1) and ");
-            for (key, val) in map.iter() {
-                if val.is_empty() {
-                    return None;
-                }
-                if push_or {
-                    query.push(" OR ");
-                }
-                query
-                    .push("(t.\"name\" = ")
-                    .push_bind(key.to_string())
-                    .push(" AND (");
+    //         let mut push_or = false;
+    //         query.push("e.id IN (SELECT ee.id FROM \"event\" ee LEFT JOIN tag t on ee.id = t.event_id WHERE ee.hidden != 1::bit(1) and ");
+    //         for (key, val) in map.iter() {
+    //             if val.is_empty() {
+    //                 return None;
+    //             }
+    //             if push_or {
+    //                 query.push(" OR ");
+    //             }
+    //             query
+    //                 .push("(t.\"name\" = ")
+    //                 .push_bind(key.to_string())
+    //                 .push(" AND (");
 
-                let has_plain_values = val.iter().any(|v| (v.len() % 2 != 0 || !is_lower_hex(v)));
-                let has_hex_values = val.iter().any(|v| v.len() % 2 == 0 && is_lower_hex(v));
-                if has_plain_values {
-                    query.push("value in (");
-                    // plain value match first
-                    let mut tag_query = query.separated(", ");
-                    for v in val.iter().filter(|v| v.len() % 2 != 0 || !is_lower_hex(v)) {
-                        tag_query.push_bind(v.as_bytes());
-                    }
-                }
-                if has_plain_values && has_hex_values {
-                    query.push(") OR ");
-                }
-                if has_hex_values {
-                    query.push("value_hex in (");
-                    // plain value match first
-                    let mut tag_query = query.separated(", ");
-                    for v in val.iter().filter(|v| v.len() % 2 == 0 && is_lower_hex(v)) {
-                        tag_query.push_bind(hex::decode(v).ok());
-                    }
-                }
+    //             let has_plain_values = val.iter().any(|v| (v.len() % 2 != 0 || !is_lower_hex(v)));
+    //             let has_hex_values = val.iter().any(|v| v.len() % 2 == 0 && is_lower_hex(v));
+    //             if has_plain_values {
+    //                 query.push("value in (");
+    //                 // plain value match first
+    //                 let mut tag_query = query.separated(", ");
+    //                 for v in val.iter().filter(|v| v.len() % 2 != 0 || !is_lower_hex(v)) {
+    //                     tag_query.push_bind(v.as_bytes());
+    //                 }
+    //             }
+    //             if has_plain_values && has_hex_values {
+    //                 query.push(") OR ");
+    //             }
+    //             if has_hex_values {
+    //                 query.push("value_hex in (");
+    //                 // plain value match first
+    //                 let mut tag_query = query.separated(", ");
+    //                 for v in val.iter().filter(|v| v.len() % 2 == 0 && is_lower_hex(v)) {
+    //                     tag_query.push_bind(hex::decode(v).ok());
+    //                 }
+    //             }
 
-                query.push(")))");
-                push_or = true;
-            }
-            query.push(")");
-        }
-    }
+    //             query.push(")))");
+    //             push_or = true;
+    //         }
+    //         query.push(")");
+    //     }
+    // }
 
     // Query for timestamp
     if f.since.is_some() {
