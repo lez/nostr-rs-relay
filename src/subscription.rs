@@ -91,7 +91,7 @@ impl Serialize for ReqFilter {
         if let Some(authors) = &self.authors {
             map.serialize_entry("authors", &authors)?;
         }
-        if let Some(king) = &self.king {
+        if let Some(_king) = &self.king {
             todo!();
         }
         // serialize tags
