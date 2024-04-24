@@ -25,7 +25,7 @@ use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::{Mutex, MutexGuard, Semaphore};
 use tokio::task;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace, warn, error};
 
 use crate::repo::{now_jitter, NostrRepo};
 use nostr::key::Keys;
@@ -1037,22 +1037,88 @@ fn query_from_filter(f: &ReqFilter) -> (String, Vec<Box<dyn ToSql>>, Option<Stri
     }
     // Query for trust
     if let Some(trust) = &f.trust {
-        params.push(Box::new(trust.root.to_owned()));
-        params.push(Box::new(trust.context.to_owned()));
-        params.push(Box::new(trust.depth.to_owned()));
+        let wot_filter;
+        let membership_filter;
 
-        filter_components.push(
-            "author IN ( \
-                WITH RECURSIVE is_trusted(pubkey, deep) AS ( \
-                    VALUES (?, 1) UNION ALL \
-                    SELECT trusted, deep+1 FROM trust, is_trusted \
-                        WHERE \
-                            trust.truster = is_trusted.pubkey \
-                            AND trust.context = ?
-                            AND is_trusted.deep < ? \
-                ) \
-                SELECT pubkey FROM is_trusted \
-            )".to_owned());
+        match &f.kinds {
+            Some(k) => {
+                wot_filter = k.iter().any(|&kind| kind == 30077);
+                membership_filter = k.iter().any(|&kind| kind != 30077);
+            },
+            None => {
+                wot_filter = false;
+                membership_filter = false;
+            }
+        }
+
+        let wot_query =
+            "WITH RECURSIVE wot(eid, pubkey, depth) AS ( \
+                VALUES (-1, ?, 1) \
+                UNION \
+                SELECT event_id, trusted, depth+1 \
+                FROM trust, wot \
+                WHERE \
+                    trust.truster = wot.pubkey \
+                    AND trust.context = ? \
+                    AND wot.depth < ? \
+            )";
+
+        if !wot_filter && membership_filter {
+            params.push(Box::new(trust.root.to_owned()));
+            params.push(Box::new(trust.context.to_owned()));
+            params.push(Box::new(trust.depth.to_owned()));
+            filter_components.push(
+                format!("author IN ({} SELECT pubkey FROM wot)", wot_query).to_owned());
+        } else if wot_filter && !membership_filter {
+            match &trust.members {
+                Some(members) => {
+                    if members.len() > 0 {
+                        // Backwards recursive query: from member(s) to root.
+                        let m1 = hex::decode(members.get(0).unwrap()).ok().unwrap();
+                        if members.len() > 1 {
+                            warn!("Multiple members in trust filter is not implemented.");
+                        }
+                        params.push(Box::new(m1.to_owned()));
+                        params.push(Box::new(trust.context.to_owned()));
+                        params.push(Box::new(trust.depth.to_owned()));
+                        params.push(Box::new(trust.root.to_owned()));
+                        filter_components.push(
+                            "e.id in ( \
+                                WITH idtbl AS (\
+                                    WITH RECURSIVE wot(pubkey, depth, trail) AS ( \
+                                        VALUES (?, 1, '[') \
+                                        UNION \
+                                        SELECT truster, depth+1, concat(trail, printf('%s,', event_id)) \
+                                        FROM trust, wot \
+                                        WHERE \
+                                            trust.trusted = wot.pubkey \
+                                            AND trust.context = ? \
+                                            AND wot.depth < ? \
+                                    ) \
+                                    SELECT pubkey, min(depth), concat(trim(trail,','), ']') AS trail_json \
+                                    FROM wot \
+                                    WHERE pubkey = ? \
+                                    GROUP BY pubkey \
+                                ) \
+                                SELECT value FROM idtbl, json_each(trail_json) \
+                            )".to_owned());
+                    } else {
+                        warn!("No members received in the filter.");
+                        filter_components.push("FALSE".to_owned());
+                    }
+                },
+                None => {
+                    params.push(Box::new(trust.root.to_owned()));
+                    params.push(Box::new(trust.context.to_owned()));
+                    params.push(Box::new(trust.depth.to_owned()));
+                    filter_components.push(
+                        format!("e.id in ({} SELECT eid from wot)", wot_query).to_owned());
+                }
+            }
+        } else {
+            error!("Not implemented.");
+            filter_components.push("FALSE".to_owned());
+        }
     }
     // Query for Kind
     if let Some(ks) = &f.kinds {

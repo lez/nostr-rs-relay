@@ -40,7 +40,8 @@ impl<'a> IntoIterator for &'a TagOperand {
 pub struct Trust {
     pub root: Vec<u8>,
     pub context: String,
-    pub depth: u8
+    pub depth: u8,
+    pub members: Option<Vec<String>>
 }
 /// Filter for requests
 ///
@@ -166,6 +167,7 @@ impl<'de> Deserialize<'de> for ReqFilter {
                 let mut root: Option<Vec<u8>> = None;
                 let mut context: String = "*".into();
                 let mut depth: u8 = 8;
+                let mut members: Option<Vec<String>> = None;
                 for (tkey, tval) in trust_map {
                     if tkey == "root" {
                         let rootval: String = Deserialize::deserialize(tval).ok().unwrap();
@@ -180,6 +182,8 @@ impl<'de> Deserialize<'de> for ReqFilter {
                             panic!();
                         }
                         info!("depth passed {}", depth);
+                    } else if tkey == "members" {
+                        members = Deserialize::deserialize(tval).ok();
                     } else {
                         info!("Invalid key in trust");
                     }
@@ -188,7 +192,8 @@ impl<'de> Deserialize<'de> for ReqFilter {
                     rf.trust = Some(Trust {
                         root: root,
                         context: context,
-                        depth: depth
+                        depth: depth,
+                        members: members
                     });
                 }
             } else if key == "authors" {
