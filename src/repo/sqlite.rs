@@ -1019,7 +1019,7 @@ fn query_from_filter(f: &ReqFilter) -> (String, Vec<Box<dyn ToSql>>, Option<Stri
 
     // individual filter components (single conditions such as an author or event ID)
     let mut filter_components: Vec<String> = Vec::new();
-    // Query for "authors", allowing prefix matches
+    // Query for "authors"
     if let Some(authvec) = &f.authors {
         // take each author and convert to a hexsearch
         let mut auth_searches: Vec<String> = vec![];
